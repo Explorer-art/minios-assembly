@@ -1,6 +1,6 @@
 [bits 16]
 
-%define ENDL 0x0D, 0x0A
+%define ENDL 0x0A, 0x0D
 
 main:
 	call clear
@@ -11,8 +11,8 @@ main:
 	cli
 	hlt
 
-%include 'src/io.asm'
-%include 'src/string.asm'
-%include 'src/terminal.asm'
+%include 'src/kernel/io.asm'
+%include 'src/kernel/string.asm'
+%include 'src/kernel/terminal.asm'
 
 msg_welcome db "Welcome to Minios!", ENDL, 0

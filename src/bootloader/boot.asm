@@ -1,108 +1,97 @@
 bits 16
 org 0x7C00
 
-%define ENDL 0Ah, 0Dh
+%define ENDL 0x0A, 0x0D
 
-jmp short start
+jmp bootloader_start
 nop
 
 
-
 ;
-; FAT12 HEADER
+; Заголовок FAT12
 ;
 
-bdb_oem:                            db "MSWIN4.1"           ; 8 bytes
-bdb_bytes_per_sector:               dw 512
-bdb_sectors_per_cluster:            db 1
-bdb_reserved_sectors:               dw 1
-bdb_fat_count:                      db 2
-bdb_dir_entries_count:              dw 0E0h
-bdb_total_sectors:                  dw 2880                 ; 2880 * 512 = 1.44 MB
-bdb_media_descriptor_type:          db 0F0h                 ; F0 = 3.5" floppy disk
-bdb_sectors_per_fat:                dw 9                    ; 9 sectors/fat
-bdb_sectors_per_track:              dw 18
-bdb_heads:                          dw 2
-bdb_hidden_sectors:                 dd 0
-bdb_large_sector_count:             dd 0
+OEMLabel                    db "MSWIN4.1"      ; Название диска
+BytesPerSector              dw 512
+SectorsPerCluster           db 1
+ReservedSectors             dw 1
+FatCount                    db 2
+RootDirEntries              dw 224              ; 224 * 32 = 7168 = 14 секторов
+LogicalSectors              dw 2880             ; 2880 * 512 = 1.44 МБ
+MediaDescriptorType         db 0F0h
+SectorsPerFat               dw 9
+SectorsPerTrack             dw 18
+Heads                       dw 2
+HiddenSectors               dd 0
+LargeSectors                dd 0
+DriveNumber                 dw 0
+Signature                   db 41
+VolumeID                    dd 00000000h
+VolumeLabel                 db "MINIOS     "    ; 11 байт
+FileSystem                  db "FAT12   "       ; 8 байт
 
-; extended boot record
-
-ebr_drive_number:                   db 0
-                                    db 0
-ebr_signature:                      db 29h
-ebr_volume_id:                      db 10h, 15h, 17h, 18h
-ebr_volume_label:                   db "MINIOS     "        ; 11 bytes
-ebr_system_id:                      db "FAT12   "           ; 8 bytes
 
 ;
 ; CODE
 ;
 
-start:
-    ; setup data segments
+bootloader_start:
+    ; Устанавливаем сегменты данных
     xor ax, ax
     mov ds, ax
     mov es, ax
 
-    ; setup stack
+    ; Устанавливаем стек
+    mov ax, 07C0h
+    mov ax, 544
+    cli
     mov ss, ax
-    mov sp, 0x7C00
+    mov sp, 4096
+    sti
 
-    push es
-    push word .after
-    retf
+    mov [DriveNumber], dl      ; Сохраняем номер диска
 
-.after:
-
-    ; read something from floppy disk
-    ; BIOS should set DL to drive number
-    mov [ebr_drive_number], dl
-
-    ; show loading message
     mov si, msg_loading
-    call puts
+    call print_string
 
-    ; read drive parameters (sectors per track and head count),
-    ; instead of relying on data on formatted disk
+    ; Получаем параметры диска
     push es
     mov ah, 08h
     int 13h
-    jc floppy_error
+    jc disk_error
     pop es
 
-    and cl, 0x3F                        ; remove top 2 bits
+    and cl, 0x3F
     xor ch, ch
-    mov [bdb_sectors_per_track], cx     ; sector count
+    mov [SectorsPerTrack], cx     ; Количество секторов
 
     inc dh
-    mov [bdb_heads], dh                 ; head count
+    mov [Heads], dh     ; Количество считывающих головок
 
     ; compute LBA of root directory = reserved + fats * sectors_per_fat
     ; note: this section can be hardcoded
-    mov ax, [bdb_sectors_per_fat]
-    mov bl, [bdb_fat_count]
+    mov ax, [SectorsPerFat]
+    mov bl, [FatCount]
     xor bh, bh
-    mul bx                              ; ax = (fats * sectors_per_fat)
-    add ax, [bdb_reserved_sectors]      ; ax = LBA of root directory
+    mul bx                          ; ax = (fats * sectors_per_fat)
+    add ax, [ReservedSectors]       ; ax = LBA of root directory
     push ax
 
     ; compute size of root directory = (32 * number_of_entries) / bytes_per_sector
-    mov ax, [bdb_dir_entries_count]
+    mov ax, [RootDirEntries]
     shl ax, 5                           ; ax *= 32
     xor dx, dx                          ; dx = 0
-    div word [bdb_bytes_per_sector]     ; number of sectors we need to read
+    div word [BytesPerSector]     ; number of sectors we need to read
 
     test dx, dx                         ; if dx != 0, add 1
-    jz .root_dir_after
+    jz read_root_dir
     inc ax                              ; division remainder != 0, add 1
                                         ; this means we have a sector only partially filled with entries
-.root_dir_after:
 
-    ; read root directory
+read_root_dir:
     mov cl, al                          ; cl = number of sectors to read = size of root directory
     pop ax                              ; ax = LBA of root directory
-    mov dl, [ebr_drive_number]          ; dl = drive number (we saved it previously)
+    mov dl, [DriveNumber]          ; dl = drive number (we saved it previously)
     mov bx, buffer                      ; es:bx = buffer
     call disk_read
 
@@ -110,32 +99,32 @@ start:
     xor bx, bx
     mov di, buffer
 
-.search_kernel:
-    mov si, file_kernel_bin
+search_kernel:
+    mov si, kernel_file
     mov cx, 11                          ; compare up to 11 characters
     push di
     repe cmpsb
     pop di
-    je .found_kernel
+    je kernel_found
 
     add di, 32
     inc bx
-    cmp bx, [bdb_dir_entries_count]
-    jl .search_kernel
+    cmp bx, [RootDirEntries]
+    jl search_kernel
 
     ; kernel not found
-    jmp kernel_not_found_error
+    jmp kernel_not_found
 
-.found_kernel:
+kernel_found:
     ; di should have the address to the entry
     mov ax, [di + 26]                   ; first logical cluster field (offset 26)
     mov [kernel_cluster], ax
 
     ; load FAT from disk into memory
-    mov ax, [bdb_reserved_sectors]
+    mov ax, [ReservedSectors]
     mov bx, buffer
-    mov cl, [bdb_sectors_per_fat]
-    mov dl, [ebr_drive_number]
+    mov cl, [SectorsPerFat]
+    mov dl, [DriveNumber]
     call disk_read
 
     ; read kernel and process FAT chain
@@ -143,7 +132,7 @@ start:
     mov es, bx
     mov bx, KERNEL_LOAD_OFFSET
 
-.load_kernel_loop:
+load_kernel_loop:
     ; Read next cluster
     mov ax, [kernel_cluster]
     
@@ -151,10 +140,10 @@ start:
     add ax, 31                          ; first cluster = (kernel_cluster - 2) * sectors_per_cluster + start_sector
                                         ; start sector = reserved + fats + root directory size = 1 + 18 + 134 = 33
     mov cl, 1
-    mov dl, [ebr_drive_number]
+    mov dl, [DriveNumber]
     call disk_read
 
-    add bx, [bdb_bytes_per_sector]
+    add bx, [BytesPerSector]
 
     ; compute location of next cluster
     mov ax, [kernel_cluster]
@@ -182,12 +171,12 @@ start:
     jae .read_finish
 
     mov [kernel_cluster], ax
-    jmp .load_kernel_loop
+    jmp load_kernel_loop
 
 .read_finish:
     
     ; jump to our kernel
-    mov dl, [ebr_drive_number]          ; boot device in dl
+    mov dl, [DriveNumber]          ; boot device in dl
 
     mov ax, KERNEL_LOAD_SEGMENT         ; set segment registers
     mov ds, ax
@@ -195,66 +184,49 @@ start:
 
     jmp KERNEL_LOAD_SEGMENT:KERNEL_LOAD_OFFSET
 
-    jmp wait_key_and_reboot             ; should never happen
-
-    cli                                 ; disable interrupts, this way CPU can't get out of "halt" state
-    hlt
-
-
-;
-; Обработчики ошибок
-;
-
-floppy_error:
-    mov si, msg_read_error
-    call puts
-
-    jmp wait_key_and_reboot
-
-kernel_not_found_error:
-    mov si, msg_kernel_not_found
-    call puts
-
-    jmp wait_key_and_reboot
-
-wait_key_and_reboot:
-    mov ah, 0
-    int 16h
-    jmp 0FFFFh:0
-
-.halt:
     cli
     hlt
 
+kernel_not_found:
+    mov si, msg_kernel_not_found
+    call print_string
+    jmp reboot
+
+disk_error:
+    mov si, msg_disk_error
+    call print_string
+    jmp reboot
+
 
 ;
-; Вывод строки на экран
+; Print string
 ;
 ; Параметры:
-; - ds:si: адрес начала строки
+; - si: строка для печати
 ;
 
-puts:
-    push si
-    push ax
-    push bx
+print_string:
+    pusha
 
 .loop:
-    mov ah, 0Eh
-    mov bh, 0
-    lodsb
+    lodsb;
     cmp al, 0
     je .done
+    mov ah, 0Eh
     int 10h
 
     jmp .loop
 
 .done:
-    pop bx
-    pop ax
-    pop si
+    popa
     ret
 
+reboot:
+    mov ax, 0
+    int 16h
+
+    mov ax, 0
+    int 19h
 
 
 ;
@@ -274,14 +246,14 @@ lba_to_chs:
     push dx
 
     xor dx, dx                              ; dx = 0
-    div word [bdb_sectors_per_track]        ; ax = LBA / SectorsPerTrack
+    div word [SectorsPerTrack]        ; ax = LBA / SectorsPerTrack
                                             ; dx = LBA % SectorsPerTrack
 
     inc dx                                  ; dx = LBA % SectorsPerTrack + 1 = сектор
     mov cx, dx                              ; cx = сектор
 
     xor dx, dx                              ; dx = 0
-    div word [bdb_heads]                    ; ax = (LBA / SectorsPerTrack) / Heads = цилиндр
+    div word [Heads]                    ; ax = (LBA / SectorsPerTrack) / Heads = цилиндр
                                             ; dx = (LBA / SectorsPerTrack) % Heads = головка
 
     mov ch, al                              ; ch = цилиндр (младшие 8 бит)
@@ -293,7 +265,6 @@ lba_to_chs:
     mov dl, al                              ; Восстановим DL
     pop ax
     ret
-
 
 
 ;
@@ -334,7 +305,7 @@ disk_read:
     jnz .retry
 
 .fail:
-    jmp floppy_error
+    jmp disk_error
 
 .done:
     popa
@@ -345,7 +316,6 @@ disk_read:
     pop bx
     pop ax
     ret
-
 
 
 ;
@@ -361,22 +331,23 @@ disk_reset:
     mov ah, 0
     stc
     int 13h
-    jc floppy_error
+    jc disk_error
 
     popa
     ret
 
 
-msg_loading:                db "Loading...", ENDL, 0
-msg_read_error:             db "Read from disk failed!", ENDL, 0
-msg_kernel_not_found:       db "KERNEL.BIN file not found!", ENDL, 0
-file_kernel_bin:            db "KERNEL  BIN"
-kernel_cluster:             dw 0
+kernel_file                     db "KERNEL  BIN"
+msg_loading                     db "Loading...", ENDL, 0
+msg_disk_error                  db "Disk error!", ENDL, 0
+msg_kernel_not_found            db "KERNEL.BIN not found!", ENDL, 0
+kernel_cluster                  dw 0
 
 KERNEL_LOAD_SEGMENT:        equ 0x2000
 KERNEL_LOAD_OFFSET:         equ 0
 
-times 510 - ($-$$) db 0
+
+times 510-($-$$) db 0
 dw 0xAA55
 
 buffer:
