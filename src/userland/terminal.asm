@@ -113,6 +113,9 @@ get_arg:
 	pop dx
 	ret
 
+%include 'src/userland/std.inc'
+%include 'src/userland/string.asm'
+
 command_prefix db "> ", 0
 command_help db "help", 0
 command_info db "info", 0
@@ -120,7 +123,5 @@ command_echo db "echo", 0
 msg_help db "COMMANDS:", ENDL, "help - help by commands", ENDL, "info - get information about the system", ENDL, "echo - print a line to the screen", ENDL, 0
 msg_info db "System: Minios", ENDL, "Version: v0.1", ENDL, "Author: Truzme_", ENDL, 0
 msg_unknown_command db "Unknown command", ENDL, 0
-
-buffer times 1024 db 0
 
 arg_buffer times 1024 db 0

@@ -128,9 +128,9 @@ kernel_found:
     call disk_read
 
     ; read kernel and process FAT chain
-    mov bx, KERNEL_LOAD_SEGMENT
+    mov bx, 2000h
     mov es, bx
-    mov bx, KERNEL_LOAD_OFFSET
+    mov bx, 0000h
 
 load_kernel_loop:
     ; Read next cluster
@@ -174,15 +174,14 @@ load_kernel_loop:
     jmp load_kernel_loop
 
 .read_finish:
-    
-    ; jump to our kernel
-    mov dl, [DriveNumber]          ; boot device in dl
+    mov dl, [DriveNumber]
 
-    mov ax, KERNEL_LOAD_SEGMENT         ; set segment registers
+    ; Устанавливаем сегменты данных
+    mov ax, 2000h
     mov ds, ax
     mov es, ax
 
-    jmp KERNEL_LOAD_SEGMENT:KERNEL_LOAD_OFFSET
+    jmp 2000h:0000h
 
     cli
     hlt
@@ -342,9 +341,6 @@ msg_loading                     db "Loading...", ENDL, 0
 msg_disk_error                  db "Disk error!", ENDL, 0
 msg_kernel_not_found            db "KERNEL.BIN not found!", ENDL, 0
 kernel_cluster                  dw 0
-
-KERNEL_LOAD_SEGMENT:        equ 0x2000
-KERNEL_LOAD_OFFSET:         equ 0
 
 
 times 510-($-$$) db 0
